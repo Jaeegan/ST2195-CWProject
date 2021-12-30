@@ -6,10 +6,10 @@ library(data.table)
 
 setwd("~/../Joshua PFDS/r/coursework/data")
 
-#asTime <- function(x) {
-  strptime(x, format = "%H%M") %>% 
-    as.ITime(format = "%H:%M")
-}
+# asTime <- function(x) {
+  # strptime(x, format = "%H%M") %>% 
+  #   as.ITime(format = "%H:%M")
+# }
 
 # load data
 plane_data <- read.csv("plane-data.csv", header = TRUE)
@@ -155,7 +155,6 @@ plane_data %>%
 
 # For each year, we calculate the number of plane delays and 'age group' of the plane
 test <- plcr_reldate %>% 
-  select(Release, Delayed_Count) %>% 
   group_by(Release) %>% 
   summarise(Count = sum(Delayed_Count)) %>%
   filter(!is.na(Release)) %>% 
@@ -182,35 +181,49 @@ res
 
 
 -----------------------------------------------------------------------------------------------
+  
+bx_data <- plcr_reldate %>% 
+  filter(!is.na(Release)) %>% 
+  group_by(Release, UniqueCarrier) %>% 
+  summarise(Count = sum(Delayed_Count)) %>%
+  arrange(Release) %>% 
+  mutate(Age = ifelse(Release >= 1997, "new", "old"))
+ 
+bx_data %>% 
+  ggplot(aes(UniqueCarrier, Release)) +
+  geom_boxplot(aes(fill = UniqueCarrier),
+            alpha = 0.5, outlier.size = 3, outlier.shape = 4, outlier.stroke = 2) +
+  geom_hline(yintercept = 1997, color = "red", linetype = "dashed", size = 1) + 
+  labs(
+    y = "Year",
+    title = "Boxplot of individual carrier delays by manufactured year"
+  )
+
+# The average planes delay by manufactured year for each carrier is below the "1997" reference
+# mark. Hence, we can conclude majority of flight delays are caused by older planes which make
+# sense given the nature of the data we used for analysis has more than 50% of the flights
+# made before 1997. This result is further supported by the hypothesis test.
+
+# We can observe 2 outliers from the plot specifically from US and CO.
 
 
-
-
-
-
-
-
-
-
-
-
-# Delay context:
-# as a consumer, the plane can depart early and arrive late, hence delay is arrival delay
-flight_data_raw %>% 
+# For each carrier, we calculate the average delays (in minutes)
+fd_new %>% 
   group_by(UniqueCarrier) %>% 
   summarise(
-    AvgDepDelay = mean(DepDelay, na.rm = TRUE),
-    AvgArrDelay = mean(ArrDelay, na.rm = TRUE)) %>% 
+    AvgDepDelay = mean(DepDelay),
+    AvgArrDelay = mean(ArrDelay)
+    ) %>% 
   arrange(desc(AvgDepDelay))
   
 
-flight_data_raw %>% 
+fd_new %>% 
   group_by(UniqueCarrier) %>% 
   summarise(
     TotalFlight = n(),
-    PerDepDelay = mean(DepDelay >= 15, na.rm = TRUE)) %>% 
+    PerDepDelay = mean(DepDelay >= 15)) %>% 
   arrange(desc(PerDepDelay))
-  
+
   
 -----------------------------------------------------------------------------------------------
 
