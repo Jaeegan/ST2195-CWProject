@@ -31,10 +31,6 @@ fd_1996 <- read.csv("1996.csv", header = TRUE)
 
 fd_raw <- rbind(fd_1995, fd_1996)
 
-# Create a new column combining the dates
-# flight_data_raw$Date <- with(flight_data_raw, paste(Year, Month, DayofMonth, sep = "-")) %>% 
-#  as.Date("%Y-%m-%d")
-
 # Converting time observations to time objects
 # flight_data_raw$CRSDepDateTime <- sprintf("%04d", flight_data_raw$CRSDepTime) %>% 
 #   asTime() %>%
@@ -96,32 +92,35 @@ missing_values
 fd_comp <- fd_raw %>% 
   filter(Cancelled == 0, Diverted == 0) %>% 
   select(-TaxiIn, -TaxiOut, -CancellationCode, -CarrierDelay, 
-         -WeatherDelay, -NASDelay, -SecurityDelay, -LateAircraftDelay)
+         -WeatherDelay, -NASDelay, -SecurityDelay, -LateAircraftDelay, 
+         -Distance, -FlightNum, -ActualElapsedTime, -CRSElapsedTime)
+
+-----------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------
+
+# # Check the structure of our data and the number of records  
+# glimpse(fd_comp)
+# 
+# # Check for the number of unique Tail Numbers
+# fd_comp %>% 
+#   group_by(TailNum) %>% 
+#   summarise(Count = n()) %>% 
+#   arrange(desc(Count))
+# 
+# # Let's look at the planes (identified by their tail number) that have the highest average delays
+# tail_delay <- fd_comp %>% 
+#   group_by(TailNum) %>% 
+#   summarise(AvgArrDelay = mean(ArrDelay)) %>% 
+#   arrange(desc(AvgArrDelay))
 
 -----------------------------------------------------------------------------------------------
 
-# Check the structure of our data and the number of records  
-glimpse(fd_comp)
-
-# Check for the number of unique Tail Numbers
-fd_comp %>% 
-  group_by(TailNum) %>% 
-  summarise(Count = n()) %>% 
-  arrange(desc(Count))
-
-# Let's look at the planes (identified by their tail number) that have the highest average delays
-tail_delay <- fd_comp %>% 
-  group_by(TailNum) %>% 
-  summarise(AvgArrDelay = mean(ArrDelay)) %>% 
-  arrange(desc(AvgArrDelay))
-
-------------------------------------------------------------------------------------------------
-------------------------------------------------------------------------------------------------
-
-# Using CRSDepTime (Scheduled Departure Time) with every hour binned as a group, we calculate
-# for the number of arrival delays with a 15-minute "grace period" given. A flight would be
-# considered delayed only if the arrival delay exceed 15-minutes so as to speak. Lets create
-# a delay indicator.
+# When is the best time of the day, day of the week, and time of the year to fly to minimize
+# delays?  
+  
+# We calculate for the number of arrival delays with a 15-minute "grace period" given. 
+# A flight would be considered delayed only if the arrival delay exceed 15-minutes so as 
+# to speak. Lets create a delay indicator.
 fd_comp <- fd_comp %>% 
   mutate(DepDel15 = ifelse(DepDelay >= 15, 1, 0),
          ArrDel15 = ifelse(ArrDelay >= 15, 1, 0),
@@ -129,21 +128,63 @@ fd_comp <- fd_comp %>%
   select(-Cancelled, -Diverted)  
 
 
+# Intuitively, flights can arrive on-time despite a late departure, hence we will be using
+# ArrDel15 (arrival delay > 15) as our indicator for delay to analyze the best time to travel.
+# First, we create a new variable - season. 
+fd_comp <- fd_comp %>% 
+  mutate(season = ifelse(Month %in% 3:5, "Spring",
+                  ifelse(Month %in% 6:8, "Summer",
+                  ifelse(Month %in% 9:11, "Autumn", "Winter"))) %>% 
+           factor(levels = c("Winter", "Spring", "Summer", "Autumn")))
 
-fd <- fd_comp %>% mutate(Season = ifelse(Month %in% 3:5, "Spring",
-                                         ifelse(Month %in% 6:8, "Summer",
-                                                ifelse(Month %in% 9:11, "Autumn",
-                                                       "Winter"))))
+depdel_mth <- fd_comp %>%  
+  select(DayofMonth, Month, season, ArrDel15)
 
+# Lets visualize the best season to travel.
+depdel_mth %>% 
+  group_by(DayofMonth, season) %>% 
+  summarise(per_del = mean(ArrDel15)) %>% 
+  ggplot(aes(DayofMonth, per_del, group = season)) +
+  geom_line(aes(color = season), size = 1) +
+  labs(title = "Percentage of Arrival Delay by Season",
+       x = "Day of Month",
+       y = "Percentage of Arrival Delay") +
+  theme_get() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5)) +
+  scale_x_discrete(limits = c(1:31)) +
+  scale_y_continuous(labels = scales::percent)
 
-# Lets visualize the best Month to travel
-depdel_mth <- fd_comp %>% 
-  group_by(Month) %>% 
-  select(Month, ArrDel15) %>% 
-  summarise(delay_count = sum(ArrDel15),
-            per_del = mean(ArrDel15))
+# From the graph, Autumn - most bottom line - has the least percentage of flights delayed.
+# During the Autumn season, the day with the least amount of delays seems to be within
+# the first week of the months.
+
+------------------------------------------------------------------------------------------------
+  
+# depdel_mth %>%
+#   group_by(DayofMonth, season) %>%
+#   summarise(per_del = mean(ArrDel15)) %>%
+#   ggplot(aes(DayofMonth, per_del)) +
+#   geom_bar(stat = "identity", aes(fill = per_del)) +
+#   geom_text(aes(label = paste(round(per_del, 4)*100, "%")),
+#             hjust = 1.2, angle = 90) +
+#   scale_fill_gradientn(colors = rev(colorspace::heat_hcl(2))) +
+#   labs(title = "Percentage of Arrival Delay by Season",
+#        x = "Day of Month",
+#        y = "Percentage of Arrival Delay") +
+#   theme_classic() +
+#   theme(plot.title = element_text(size = 15, hjust = 0.5)) +
+#   scale_x_discrete(limits = c("Week 1", rep("", 6), "Week 2", rep("", 6),
+#                               "Week 3", rep("", 6), "Week 4", rep("", 6),
+#                               "Week 5")) +
+#   scale_y_continuous(labels = scales::percent) +
+#   guides(fill = guide_legend(title = "Percentage")) +
+#   facet_wrap(~ season)
+
+------------------------------------------------------------------------------------------------
 
 depdel_mth %>% 
+  group_by(Month) %>%
+  summarise(per_del = mean(ArrDel15)) %>% 
   ggplot(aes(Month, per_del)) +
   geom_bar(stat = "identity", aes(fill = per_del)) +
   geom_text(aes(label = paste(round(per_del, 4)*100, "%")),
@@ -157,25 +198,24 @@ depdel_mth %>%
   scale_x_discrete(limits = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", 
                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")) +
   scale_y_continuous(labels = scales::percent) +
-  guides(fill = guide_legend(title = "Percentage"))
+  guides(fill = guide_legend(title = "Percentage"))  
+  
+# The best Month to travel are in April, May (Spring) and September (Autumn) with chance 
+# delay flights on arrival - 18.05%, 18.82% and 16.54% respectively.
 
-# The best Month to travel are in April, May and September with chance of 18.05%, 18.82% 
-# and 16.54% of flights delayed on arrival respectively.
-
-# Now let us look at which day in the week is the best to travel.
-depdel_wk <- fd_comp %>% 
-  group_by(DayOfWeek) %>% 
-  select(DayOfWeek, ArrDel15) %>% 
-  summarise(delay_count = sum(ArrDel15),
-            per_del = mean(ArrDel15))
+# Now let us look at which day of the week is the best to travel.
+depdel_wk <- fd_comp %>%
+  select(DayOfWeek, season, ArrDel15)
 
 depdel_wk %>% 
+  group_by(DayOfWeek, season) %>%  
+  summarise(delay_count = sum(ArrDel15),
+            per_del = mean(ArrDel15)) %>% 
   ggplot(aes(DayOfWeek, per_del)) +
   geom_bar(stat = "identity", aes(fill = per_del)) +
   geom_text(aes(label = paste(round(per_del, 4)*100, "%")),
-            vjust = -1) +
+            vjust = -1, size = 3) +
   scale_fill_gradientn(colors = rev(colorspace::heat_hcl(4))) +
-  theme_light() +
   labs(title = "Percentage of Arrival Delay by Day of Week",
        x = "Day of Week",
        y = "Percentage of Arrival Delay") +
@@ -183,290 +223,274 @@ depdel_wk %>%
   theme(plot.title = element_text(size = 15, hjust = 0.5)) +
   scale_x_discrete(limits = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")) +
   scale_y_continuous(labels = scales::percent) +
-  guides(fill = guide_legend(title = "Percentage"))
+  guides(fill = guide_legend(title = "Percentage")) +
+  facet_wrap(~ season)
 
-# It best to fly on the weekends. Most notably, only 18.95% of the flights on Saturdays are
-# prone to arrive late.
+# Its best to fly on the weekends. Most notably, the best day of week to fly during Autumn
+# season is on the Saturday(s), with a low of 15.13% of flights delayed. 
+# Summary: Winter: Sunday   - 23.06%
+#          Spring: Saturday - 16.38%
+#          Summer: Saturday - 19.30%
+#          Autumn: Saturday - 15.13%
 
-------------------------------------------------------------------------------------------------
-  
-depdel_tm <- fd_comp %>% 
-  mutate(CRSDepTime = sprintf("%04d", fd_comp$CRSDepTime) %>% 
-           asTime(format = "%H:00:00")) %>% 
-  filter(ArrDelay >= 15) %>% 
-  group_by(CRSDepTime) %>% 
-  summarise(delay_count = n()) 
+
+# Using CRSDepTime (Scheduled Departure Time) with every hour binned as a group (24 groups in
+# total).
+
+depdel_tm <- fd_comp %>%
+  mutate(CRSDepTime = sprintf("%04d", fd_comp$CRSDepTime) %>%
+           asTime(format = "%H:00:00")) %>%
+  select(CRSDepTime, ArrDel15) %>%
+  filter(ArrDel15 == 1) %>%
+  group_by(CRSDepTime) %>%
+  summarise(delay_count = n())
 
 # Lets create a visualization - Number of Arrival Delays versus CRSDepTime
-depdel_tm %>% 
+depdel_tm %>%
   ggplot(aes(x = CRSDepTime, y = delay_count)) +
   geom_line(color="#69b3a2", size = 1.5) +
   labs(title = "Delay versus Scheduled Departure Time",
     x = "Schedule Departure Time",
     y = "Number of Arrival Delays") +
-  theme_minimal() +
+  theme_get() +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
         plot.title = element_text(size = 15, hjust = 0.5)) +
-  scale_x_time(labels = scales::label_time(format = "%H:%M"), 
+  scale_x_time(labels = scales::label_time(format = "%H:%M"),
                breaks = hms(hours = seq(0, 23, 1)))
-  
-# According to the chart, flight delays were low in the early morning and picked up after 06:00
+
+# According to the chart, flight delays were low in the early morning and picked up after 10:00
 # with the most number of delays occurring between 16:00-19:00. The delays decline towards
 # late night.
-# Minimize chances of flight delay by avoiding flights that depart between 16:00-19:00.
+# Minimize the chance of flight delays by traveling in the morning and avoid flights that
+# depart between 16:00-19:00.
 
+-----------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------
 
-# Since we have looked at the number of arrival delays by departure time, let us now study 
-# the average arrival delay time.   
-depdel_tm2 <- fd_comp %>% 
-  mutate(CRSDepTime = sprintf("%04d", fd_comp$CRSDepTime) %>% 
-           asTime(format = "%H:%M:00")) %>% 
-  filter(ArrDelay >= 15) %>%
-  group_by(CRSDepTime) %>%
-  summarise(avg_del = mean(ArrDelay))
-  
-# Alternate visualization - Average Arrival Delayed Time (min) versus CRSDepTime
-depdel_tm2 %>% 
-  ggplot(aes(CRSDepTime, avg_del)) +
-  geom_point(color = "#69b3a2", size = 1.2) +
-  geom_smooth(method = "loess", col = "#CC6666", size = 1.5, se = FALSE) +
-  geom_hline(yintercept = 15) +
-  labs(title = "Average delay (minutes) versus Scheduled Departure Time",
-       x = "Schedule Departure Time",
-       y = "Average Arrival Delayed Time (minutes)") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
-        plot.title = element_text(size = 15, hjust = 0.5)) +
-  scale_x_time(labels = scales::label_time(format = "%H:%M"), 
-               breaks = hms(hours = seq(0, 23, 1))) +
-  scale_y_continuous(breaks = sort(c(seq(min(depdel_tm2$avg_del), 
-                                         max(depdel_tm2$avg_del), 
-                                         length.out=5), 15)))
-  
-# Once again, we were able to observe from the graph that the average arrival delayed time 
-# is the highest for flights that are scheduled between 16:00-19:00.
-# In general, expected arrival delay is between 30-45 minutes. 
+# # Since we have looked at the number of arrival delays by departure time, let us now study 
+# # the average arrival delay time.   
+# depdel_tm2 <- fd_comp %>%
+#   mutate(CRSDepTime = sprintf("%04d", fd_comp$CRSDepTime) %>%
+#            asTime(format = "%H:%M:00")) %>%
+#   filter(ArrDelay >= 15) %>%
+#   group_by(CRSDepTime) %>%
+#   summarise(avg_del = mean(ArrDelay))
+# 
+# # Alternate visualization - Average Arrival Delayed Time (min) versus CRSDepTime
+# depdel_tm2 %>%
+#   ggplot(aes(CRSDepTime, avg_del)) +
+#   geom_point(color = "#69b3a2", size = 1.2) +
+#   geom_smooth(method = "loess", col = "#CC6666", size = 1.5, se = FALSE) +
+#   geom_hline(yintercept = 15) +
+#   labs(title = "Average delay (minutes) versus Scheduled Departure Time",
+#        x = "Schedule Departure Time",
+#        y = "Average Arrival Delayed Time (minutes)") +
+#   theme_minimal() +
+#   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+#         plot.title = element_text(size = 15, hjust = 0.5)) +
+#   scale_x_time(labels = scales::label_time(format = "%H:%M"),
+#                breaks = hms(hours = seq(0, 23, 1))) +
+#   scale_y_continuous(breaks = sort(c(seq(min(depdel_tm2$avg_del),
+#                                          max(depdel_tm2$avg_del),
+#                                          length.out=5), 15)))
+#    
+# # Once again, we were able to observe from the graph that the average arrival delayed time 
+# # is the highest for flights that are scheduled between 16:00-19:00.
+# # In general, expected arrival delay is between 30-45 minutes. 
   
 -----------------------------------------------------------------------------------------------
------------------------------------------------------------------------------------------------  
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+  
 # Do older planes suffer more delays than newer planes?
 # Lets check the structure of the data before we begin   
 glimpse(plane_data)
 
-# As the original record of the years are of type chr, we have to cast it to numerical where
-# arithmetic calculations can be applied
-plane_data$year <- plane_data$year %>% as.numeric()
+# Coerce issue_date to date class
+plane_data$issue_date <- plane_data$issue_date %>% as.Date("%d/%m/%Y")
 
-# Create a table with plane manufactured year identified by tail number
-plane_reldate <- plane_data %>% 
-  select(TailNum = tailnum, year)
+-----------------------------------------------------------------------------------------------
+# # Check for missing values
+# plane_data %>%
+#   summarise(across(everything(), ~ sum(is.na(.)))) %>%
+#   t() %>% as.data.frame() %>%
+#   rename(misVal = 1) %>%
+#   filter(misVal > 0)
+# 
+# # Since we are interested in the age of the planes versus delay, we shall drop records
+# # with missing data.
+# plane_data <- plane_data %>%
+#   filter(!is.na(issue_date)) %>%
+#   select(manufacturer, tailnum, issue_date)
 
+-----------------------------------------------------------------------------------------------
 
-
-fd_reldate <- merge(fd_new, plane_reldate, by = "TailNum", all.x = TRUE, all.y = FALSE) %>%
-  group_by(TailNum, UniqueCarrier, year) %>% 
-  summarise(total_delays = sum(Delayed))
-
-# Check for possible duplication of Tail numbers  
-fd_reldate %>% 
-  group_by(TailNum) %>% 
-  summarise(Count = n()) %>% 
-  arrange(desc(Count))
-
-# After reviewing the results, there are records with duplicate Tail numbers.
-# This could suggest possible entry errors in the original data.
-
-# Check for missing data
-summary(fd_reldate)
-
-# We have records on an estimated 3634 planes (by tail number).
-# Unfortunately, we do not have the manufactured data for 2431 of those planes.
-# Since we are interested in the age of the planes on delay, the incommplete records
-# will be removed.
-fd_reldate <- fd_reldate %>% 
-  filter(!is.na(year))
-
-
-fd_reldate <- merge(fd_reldate, carriers, by.x = "UniqueCarrier", by.y = "Code",
+# Similarly, we coerce the date information from the flight data to date class 
+fd_comp$flight_date <- with(fd_comp, paste(Year, Month, DayofMonth, sep = "-")) %>%
+  as.Date("%Y-%m-%d")
+    
+# We will be using the delay indicator formulated at the beginning of the study 
+# to analyze how the age of a plane impact its performance. 
+plane_date <- merge(fd_comp, plane_data, by.x = "TailNum", by.y = "tailnum",
+                    all.x = TRUE, all.y = FALSE) %>% 
+  merge(carriers, by.x = "UniqueCarrier", by.y = "Code",
                        all.x = TRUE, all.y = FALSE) %>% 
-  select(TailNum, UniqueCarrier, carrier = Description, everything()) %>% 
-  rename_all(tolower)
+  select(Description, UniqueCarrier, TailNum, manufacturer, flight_date, 
+         issue_date, season, Delayed)
 
-# From the plane data, we calculate the average manufacturing year as a reference, where;
-# before average = older planes,
-# after average = newer planes.
-plane_data %>%
-  filter(!is.na(year), year !=  0) %>% 
-  select(year) %>%
-  arrange(year) %>% 
-  summarise(avg_year = round(mean(year), 0))
 
-# For each year, we calculate the number of plane delays and create an 'age group' indicator
-test <- fd_reldate %>% 
-  group_by(year) %>% 
-  summarise(total_delays = sum(total_delays)) %>% 
-  mutate(age = ifelse(year >= 1997, "new", "old")) 
+# Before we proceed further, lets do a quick check for any missing values 
+# after the merger of various different data frames.
+plane_date %>% 
+  summarise(across(everything(), ~ sum(is.na(.)))) %>% 
+  t() %>% as.data.frame() %>% 
+  rename(misVal = 1) %>% 
+  filter(misVal > 0)
 
-# We conduct a hypothesis test to compare equality of the two variance
-res.ftest <- var.test(total_delays ~ age, data = test)
+# Since we are interested in the age of the planes versus delay, we shall drop records
+# with missing data.
+plane_date <- plane_date %>%
+  filter(!is.na(issue_date))
 
-res.ftest
-# As the p-value = 6.468e-8%, which is less than the 1% significance level.
-# There is strong evidence to reject the null hypothesis and conclude that the true
-# variances are not equal
-
-# Conduct a unpaired left-tailed t-test
-# Null hypothesis: average new planes delay - average old planes delay >= 0
-# Alt hypothesis: average new planes delay - average old planes delay < 0
-res <- t.test(total_delays ~ age, data = test, var.equal = FALSE, alternative = "less")
-
-res
-# As the p-value = 0.01266%, which is less than the 1% significance level.
-# There is strong evidence to reject the null hypothesis and conclude that older planes
-# do suffer from more delays
+-----------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------
   
-bx_data <- fd_reldate %>% 
-  group_by(year, uniquecarrier) %>% 
-  summarise(total_delays = sum(total_delays)) %>%
-  mutate(age = ifelse(year >= 1997, "new", "old"))
- 
-bx_data %>% 
-  ggplot(aes(year, total_delays, fill = uniquecarrier)) +
-  geom_bar(stat = "identity") +
-  geom_vline(xintercept = 1997, color = "red", linetype = "dashed", size = 0.3) +
-  geom_text(aes(x=1997, label="\nnew planes", y=35000), colour="#69b3a2", angle=90, size = 3.2) +
-  geom_text(aes(x=1997, label="old planes\n", y=35000), colour="#CC6666", angle=90, size = 3.2) +
-  guides(fill=guide_legend(title="Unique Carrier")) +
-  facet_wrap(~uniquecarrier, ncol = 3) +
-  labs(
-    title = "Multiple Bar Charts - Total Delays by Manufactured Year by Carrier",
-    x = "Manufactured Year",
-    y = "Delay Count"
-  )
+# # Check for possible duplication of Tail Numbers  
+# plane_date %>% 
+#   group_by(TailNum) %>% 
+#   summarise(count = n()) %>% 
+#   arrange(desc(count))
 
-# The majority of planes delay by manufactured year for each carrier is below the "1997" reference
-# mark. However, this graphical representation is not sufficient enough to conclude older planes
-# do indeed result in more delays, and should be interpreted together with a hypothesis test result.
-
-# There seems to be a pattern in plane delays by manufactured year. More specifically, planes 
-# that were manufactured in the year 1989-1991 appears to have contributed to the majority of 
-# delays.
-
-------------------------------------------------------------------------------------------------
-
-# For each carrier, we calculate the average delays (in minutes)
-fd_new %>% 
-  group_by(UniqueCarrier) %>% 
-  summarise(
-    AvgDepDelay = mean(DepDelay),
-    AvgArrDelay = mean(ArrDelay)
-    ) %>% 
-  arrange(desc(AvgDepDelay))
   
-# Percentage of delays within each carrier
-fd_comp %>% 
-  group_by(UniqueCarrier) %>% 
-  select(UniqueCarrier, Delayed) %>% 
-  summarise(
-    Total_Delays = sum(Delayed),
-    PerDelays = mean(Delayed))
+# # From the plane data, we calculate the average manufacturing year as a reference, where;
+# # before average = older planes,
+# # after average = newer planes.
+# plane_data %>%
+#   filter(!is.na(year), year !=  0) %>% 
+#   select(year) %>%
+#   arrange(year) %>% 
+#   summarise(avg_year = round(mean(year), 0))
 
-# Percentage of delays between the carrier
-donut <- fd_new %>% 
-  group_by(UniqueCarrier) %>% 
-  summarise(
-    TotalFlight = n(),
-    n = sum(Delayed)) %>% 
-  ungroup() %>% 
-  summarise(
-    UniqueCarrier,
-    PerDelays = n/ sum(n)
-  ) %>% 
-  arrange(PerDelays)
+-----------------------------------------------------------------------------------------------
+
+# The age of a plane depends on multiple factors beside its chronological age. We will not
+# be going into the details in this analysis and with reference, take 11 years - the average
+# age of U.S. commercial aircraft - as our standard for old planes.
+# Create an age indicator; 0 = old planes, 1 = new planes.  
+plane_date <- plane_date %>% 
+  mutate(step1 = ifelse(lubridate::time_length(difftime(plane_date$flight_date, 
+                                                      plane_date$issue_date), "years") < 0, NA, 1),
+         age = ifelse(lubridate::time_length(difftime(plane_date$flight_date, 
+                                                        plane_date$issue_date), "years") <= 11, 1, 0)) %>% 
+  filter(!is.na(step1))
+
+# Flight performance (Delayed) indicator; 0 = On-time, 1 = Delayed
+obsvtn <- plane_date %>% 
+  select(UniqueCarrier, Delayed , age) %>% 
+  mutate(age = factor(plane_date$age, c(0, 1), labels = c("old", "new")),
+         Delayed = factor(plane_date$Delayed, c(0:1), labels = c("On-time", "Delayed")),
+         UniqueCarrier = factor(plane_date$UniqueCarrier)
+  ) 
+
+# Our interest: if older planes suffer more delays than newer planes. Using the observed
+# frequencies create a contingency table.
+xtbl_count <- table(obsvtn$age, obsvtn$Delayed)
+
+# Row percentages
+xtbl_per <- round(prop.table(xtbl_count, 1)*100, 2)
+
+# We display the information on a clustered bar chart, with percentages of flight on-time
+# and delayed within each group.
+xtbl_per %>%
+  as.data.frame() %>%
+  ggplot(aes(x = Var2, y = Freq, fill = Var1)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = (paste(round(Freq, 2), "%"))),
+          vjust = -1, size = 4, position = position_dodge(width = 0.9)) +
+  labs(title = "Percentage of Planes by Flight Performance grouped by Aircraft Age",
+       x = "Flight Perfomance",
+       y = "Percentage of Planes") +
+  theme_get() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5)) +
+  guides(fill = guide_legend(title = "Plane"))
+
+# There seems to be no association between the planes' age and their flight performance.
 
 
-donut$ymax = cumsum(donut$PerDelays)
-donut$ymin = c(0, head(donut$ymax, n=-1))
-donut$labelPosition <- (donut$ymax + donut$ymin)/ 2
-donut$label <- paste0(donut$UniqueCarrier, "\n", round(donut$PerDelays, 4)*100, " %")
+addmargins(xtbl_count)
+
+# Overall 74.75% of flights arrived on-time, if no association exist between planes' age and 
+# flight performance, approximately 75% of the planes would be on-time.
 
 
-donut %>% 
-  ggplot(aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=UniqueCarrier)) +
-  geom_rect() +
-  geom_text(x = 2.5, aes(y = labelPosition, label = label, color = UniqueCarrier), size = 3) +
-  scale_fill_brewer(palette = "BrBG") +
-  scale_color_brewer(palette = "BrBG") +
-  coord_polar(theta="y") +
-  xlim(c(0, 5)) +
-  theme_void() +
-  labs(
-    title = "Donut Plot - Percentage of Delays by Carrier"
-  )
+# H0: There is no association between the planes' age and flight performance
+# H1: There is such an association
+chisq.test(xtbl_count)
+
+# As the p-value = 3.39%, which is more than the 1% significance level. The test result is
+# moderately significant. There is not enough evidence to reject the null hypothesis and to 
+# conclude that older planes do suffer from more delays
+
+-----------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------
+
+# # For each carrier, we calculate the average delays (in minutes)
+# fd_comp %>% 
+#   group_by(UniqueCarrier) %>% 
+#   summarise(
+#     avg_depdel = mean(DepDelay),
+#     avg_arrdel = mean(ArrDelay)
+#     ) %>% 
+#   arrange(desc(avg_arrdel))
+#   
+# # Percentage of delays within each carrier
+# fd_comp %>% 
+#   group_by(UniqueCarrier) %>% 
+#   select(UniqueCarrier, Delayed) %>% 
+#   summarise(
+#     total_delays = sum(Delayed),
+#     per_del = mean(Delayed))
+# 
+# # Percentage of delays between the carrier
+# donut <- fd_comp %>% 
+#   group_by(UniqueCarrier) %>% 
+#   summarise(
+#     flight_count = n(),
+#     n = sum(Delayed)) %>% 
+#   ungroup() %>% 
+#   summarise(
+#     UniqueCarrier,
+#     per_del = n/ sum(n)
+#   ) %>% 
+#   arrange(per_del)
+# 
+# 
+# donut$ymax = cumsum(donut$per_del)
+# donut$ymin = c(0, head(donut$ymax, n=-1))
+# donut$labelPosition <- (donut$ymax + donut$ymin)/ 2
+# donut$label <- paste0(donut$UniqueCarrier, "\n", round(donut$per_del, 4)*100, " %")
+# 
+# 
+# donut %>% 
+#   ggplot(aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill = UniqueCarrier)) +
+#   geom_rect() + 
+#   geom_text(x = 3.5, aes(y = labelPosition, label = label), size = 3.4,
+#             color = "white") +
+#   scale_fill_brewer(palette = "BrBG") +
+#   scale_color_brewer(palette = "BrBG") +
+#   coord_polar(theta="y") +
+#   xlim(c(0.5, 5)) +
+#   theme_void() +
+#   labs(title = "Donut Plot - Percentage of Carrier by Delays")
  
 -----------------------------------------------------------------------------------------------
 
 # How does the number of people flying between different locations change over time?
 # Lets check the structure of the data before we begin  
-glimpse(fd_new) 
+glimpse(fd_comp) 
    
-fd_new$route <- with(fd_new, paste(Origin, Dest, sep = "-"))  
+fd_comp$route <- with(fd_comp, paste(Origin, Dest, sep = "-"))  
   
-fd_routes <- fd_new %>% 
-  select(-contains("Time"), -contains("Del"), -contains("Num"), -Distance)
+fd_routes <- fd_comp %>% 
+  select(-contains("Time"), -contains("Del"), -contains("Num"))
   
 head(fd_routes)
   
@@ -476,56 +500,49 @@ fd_routes %>%
   summarise(count = n()) %>% 
   arrange(desc(count))
 
+-----------------------------------------------------------------------------------------------
+# # For each month, we calculate the change in flights by carrier
+# fd_routes %>% 
+#   group_by(Year, Month, route, UniqueCarrier) %>% 
+#   summarise(count = n())
+#   
+# monthly_rep <- fd_routes %>% 
+#   group_by(Month, route) %>% 
+#   summarise(count = n()) %>% 
+#   arrange(route) %>% 
+#   group_by(route) %>% 
+#   mutate(
+#     MoM = round((count - lag(count, n = 1, default = NA))*100/ lag(count, n = 1, default = NA), 2)
+#   ) 
+# 
+# route_count <- fd_routes %>%
+#   group_by(Month, route) %>%
+#   summarise(count = n()) %>%
+#   spread(key = route, value = count)
+# 
+# perlag <- monthly_rep %>%
+#   mutate(Month  = factor(Month, levels = c(1:12))) %>% 
+#   select(Month, route, MoM) %>% 
+#   spread(key = route, value = MoM)
+# 
+# 
+# report <- mapply(rbind, route_count, perlag) 
+# 
+# report <- t(report[,-1])
+# 
+# col_lab1 <- as.data.frame(month.abb)
+# col_lab2 <- rep("MoM (%)", 12) %>% 
+#   as.data.frame()
+# 
+# report_label <- mapply(rbind, col_lab1, col_lab2)
+# 
+# colnames(report) <- as.character(report_label)
 
-# For each month, we calculate the change in flights by carrier
-fd_routes %>% 
-  group_by(Year, Month, route, UniqueCarrier) %>% 
-  summarise(count = n())
-  
-monthly_rep <- fd_routes %>% 
-  group_by(Month, route) %>% 
-  summarise(count = n()) %>% 
-  arrange(route) %>% 
-  group_by(route) %>% 
-  mutate(
-    MoM = round((count - lag(count, n = 1, default = NA))*100/ lag(count, n = 1, default = NA), 2)
-  ) 
+------------------------------------------------------------------------------------------------
 
-route_count <- fd_routes %>% 
-  group_by(Month, route) %>% 
-  summarise(count = n()) %>% 
-  spread(key = route, value = count)
-
-perlag <- monthly_rep %>%
-  mutate(Month  = factor(Month, levels = c(1:12))) %>% 
-  select(Month, route, MoM) %>% 
-  spread(key = route, value = MoM)
-
-
-report <- mapply(rbind, route_count, perlag) 
-
-report <- t(report[,-1])
-
-col_lab1 <- as.data.frame(month.abb)
-col_lab2 <- rep("MoM (%)", 12) %>% 
-  as.data.frame()
-
-report_label <- mapply(rbind, col_lab1, col_lab2)
-
-colnames(report) <- as.character(report_label)
-
-
-----------------------------------------------------------------------------
-
-# Check popularity of destination by number of flight arrivals by month
+# Multiple Bar chart - Number of Flights Inbound by Destinations
 fd_routes %>% 
   group_by(Dest, Month) %>% 
-  summarise(count = n()) %>% 
-  arrange(desc(count))
-
-# Multiple Barplot for number of flights by season for each unique destinations
-fd_routes %>% 
-  group_by(Month, Dest) %>% 
   summarise(count = n()) %>%
   mutate(Month = month.abb[Month] %>% factor(levels = month.abb)) %>% 
   ggplot(aes(x = Month, y = count)) +
@@ -534,7 +551,57 @@ fd_routes %>%
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 
-# Multiple Barplot for number of flights by season for each outgoing flight from ORD (Chicago)
+# The top 3 most popular destination seems to be (in no order) ATL, DFW, ORD. 
+
+# Summary table for number of flights by destination per month
+fd_mth <- fd_comp %>% 
+  select(route, Origin, Dest, season, Month) %>% 
+  group_by(Month, Dest) %>% 
+  summarise(count = n()) %>% 
+  arrange(Dest, Month) %>% 
+  spread(key = Month, value = count) %>%
+  column_to_rownames("Dest") %>% 
+  replace(is.na(.), 0) %>% 
+  mutate(total_flight = rowSums(.))
+
+# Proportion of Flights by Month by Destination
+per_fd_mth <- fd_mth%>% 
+  apply(2,
+        function(x) {
+          round(x*100/ sum(fd_mth$total_flight), 4)
+          }) %>% 
+  as.data.frame() %>% 
+  filter(total_flight > 0.5) %>% 
+  rownames_to_column("dest") %>% 
+  gather(key = "month", value = "per_flight", -dest, -total_flight) %>% 
+  mutate(month = factor(month, levels = c(1:12)))
+
+per_fd_mth %>% 
+  group_by(month, dest) %>%
+  ggplot(aes(x = month, y = per_flight)) +
+  geom_point(color = "orange") +
+  geom_segment(aes(x = month, xend = month, y = 0, yend = per_flight)) +
+  labs(title = "Proportion of Flights by Month by Destination",
+     x = "Month",
+     y = "Percentage of Flights") +
+  theme_get() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  scale_x_discrete(labels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")) +
+  facet_wrap(~dest, ncol = 13)
+
+# In general, people seem to fly less in February as the proportion of flights appears
+# to decline on February across the destinations used in the graph. Eg. Flights inbound 
+# to SEA is lowest in February and higher in August.
+
+# Check popularity of destination by number of flight inbound by month
+fd_routes %>% 
+  group_by(Dest, Month) %>% 
+  summarise(count = n()) %>% 
+  arrange(desc(count))
+
+# Multiple Bar Plot - Number of Flights by Month by Flights outbound from ORD (Chicago)
 fd_routes %>% 
   filter(Origin == "ORD") %>% 
   group_by(Month, route) %>% 
@@ -546,32 +613,33 @@ fd_routes %>%
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 
+-----------------------------------------------------------------------------------------------
 
-# Multiple line chart for number of flights by time for each unique destination 
-# Removed records with less than 100 flights to destination
-fd_routes %>% 
-  mutate(date = with(fd_routes, paste(Year, Month, sep = "-")) %>% as.yearmon()) %>% 
-  group_by(date, Dest) %>% 
-  summarise(count = n()) %>%
-  filter(count > 100) %>% 
-  ggplot(aes(x = date, y = count)) +
-  geom_line() +
-  facet_wrap(~Dest, ncol = 20) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+# # Multiple Line Chart - Number of Flights by Time by Destination 
+# # Removed records with less than 100 flights to destination
+# fd_routes %>% 
+#   mutate(date = with(fd_routes, paste(Year, Month, sep = "-")) %>% as.yearmon()) %>% 
+#   group_by(date, Dest) %>% 
+#   summarise(count = n()) %>%
+#   filter(count > 100) %>% 
+#   ggplot(aes(x = date, y = count)) +
+#   geom_line() +
+#   facet_wrap(~Dest, ncol = 20) +
+#   theme_minimal() +
+#   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 
+-----------------------------------------------------------------------------------------------
 
-
-# We sample 1 airport, we check the number of flights by routes by month
-# Lets check which airport has the most number of outgoing flights in a year
+# RE: How does the number of people flying between different locations change over time?
+# We will be using the airport with the most number of outbound flights as our sample to
+# this analysis. Lets check the airport with the most number of outbund flights.
 fd_routes %>%
   group_by(Year, Origin) %>% 
   summarise(count = n()) %>%
   arrange(desc(count))
 
 # ORD - Chicago O'Hare International has the most number of outgoing flights yearly.
-# We shall use fight data from the ORD airport as our sample.
-
+# We will use fight data from the ORD airport to continue our analysis.
 fd_routes %>% 
   mutate(date = with(fd_routes, paste(Year, Month, sep = "-")) %>% as.yearmon()) %>% 
   filter(Origin == "ORD") %>% 
@@ -665,166 +733,11 @@ carrier_del %>%
 ------------------------------------------------------------------------------------------------
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Create a new data frame storing only information on flight delays
-flight_data_delays <- flight_data_raw[, c("CRSDepTime" ,"CRSArrTime", "DepTime", "ArrTime", "DepDelay", "ArrDelay")]
-
-# A smaller version of the raw data frame, removing variables that might not be useful
-flight_data <- flight_data_raw %>% transmute(UniqueCarrier, Origin, Dest, CRSDepTime, 
-                                             DepTime, DepDelay, CRSArrTime, ArrTime, 
-                                             ArrDelay, CRSElapsedTime, ActualElapsedTime)
-
-
-
-flight_data <- flight_data_raw %>% mutate(Season = ifelse(Month %in% 3:5, "Spring",
-                                                             ifelse(Month %in% 6:8, "Summer",
-                                                                    ifelse(Month %in% 9:11, "Autumn",
-                                                                           "Winter"))))
-
-# Check for the number of missing data
-skim(flight_data, ArrDelay, DepDelay)
-# flight_data %>% count(is.na(DepDelay))
-
-# For a better accuracy of the results, incomplete observations will be removed
-# All cancelled and diverted flights are removed
-flight_data <- flight_data[complete.cases(flight_data),]
-
-# Check for negative flight times
-# flight_data %>% count(ArrTime > DepTime)
-
-# Quick check for records with Duplicate Tail Numbers
-# flight_data %>% count(length(unique(TailNum)))
-
-
-
->> filter ArrDelays more than 15 mins
->> create a heatmap 
-
->> find the average arrival delay time
->> % of the arrival delay flight over total flights
-
-
-flight_data <- flight_data %>% mutate(DepDel = ifelse(DepDelay > 0 & DepDelay < 15, 0, DepDelay),
-                                      DepDel15 = ifelse(DepDelay >= 15, 1, 0))
-
-flight_data %>% count(DepDel == 0)
-flight_data %>% count(DepDel15 == 1)
-
-
-DepDel <- flight_data %>% transmute(DepDel = ifelse(DepDelay > 0 & DepDelay < 15, 0, NA))
-DepDel15 <- flight_data %>% transmute(DepDel15 = ifelse(DepDelay >= 15, 1, NA))
-
-
-DepDel_long <- melt(data = DepDel,
-                        variable.name = "DepDelay",
-                        value.name = "Value")
-
-DepDel15_long <- melt(data = DepDel15,
-                        variable.name = "DepDelay",
-                        value.name = "Value")
-
-DepDelay <- rbind(DepDel_long, DepDel15_long)
-DepDelay <- DepDelay[complete.cases(DepDelay),]
-
-# library(ggplot2)
-# pie <- ggplot(DepDelay, aes(x = "", y = Value, fill = DepDelay)) +
-#  geom_bar(width = 1, stat = "identity") +
-#  coord_polar("y", start = 0)
-
-
-flight_data %>% 
-  dplyr::group_by(UniqueCarrier) %>% 
-  skim(ArrDelay, DepDelay)
-
 # Calculates the average arrival delays across the carriers
-carrier_performance <- flight_data %>% 
-                        group_by(UniqueCarrier) %>% 
-                        summarise(Avg_ArrDelay = mean(ArrDelay)) %>% 
-                        arrange(Avg_ArrDelay)
+fd_comp %>% 
+  group_by(UniqueCarrier) %>% 
+  summarise(Avg_ArrDelay = mean(ArrDelay)) %>% 
+  arrange(Avg_ArrDelay)
 
 
-
-arrDelay <- filter(otd95, ArrDelay > 0)
-str(arrDelay)
-
-depDelay <- filter(otd95, DepDelay > 0)
-str(depDelay)
-
-
-
-
-head(otd95 %>% select(DepDelay, DepDelayMinutes, DepDel15), 10)
-
-otd95 %>% count(DepDel15 == 1)
-
-
-
-
-str(otd95)
-
-
-
-cancel_delay_analysis <- otd95 %>% 
-  group_by(Year, Month, DayofMonth, UniqueCarrier) %>% 
-  summarise(
-    monthly_flight = n(),
-    avg_ArrDelay = mean(ArrDelay[ArrDelay > 0], na.rm=TRUE),
-    avg_DepDelay = mean(DepDelay[DepDelay > 0], na.rm=TRUE),
-    sum_Cancelled = sum(is.na(DepDelay))
-  )
-
-ggplot(data = cancel_delay_analysis) +
-  geom_point(aes(x=avg_ArrDelay, y=sum_Cancelled)) +
-  geom_smooth(mapping = aes(x=avg_ArrDelay, y=sum_Cancelled)) +
-  facet_wrap(~UniqueCarrier, nrow = 3)
-
-
-
-
-
-
-
-
-
-
-
-airlinecount <- data.frame(dplyr::count(delayed_otd95, UniqueCarrier))
-airlinecount <- airlinecount[order(airlinecount$n, decreasing = TRUE), ]
-
-ggplot(airlinecount, aes(x = reorder(UniqueCarrier, n), y = n)) + 
-  geom_bar(colour="white", fill="red", stat="identity") + 
-  geom_text(aes(label=scales::comma(n)), vjust=-0.1, hjust=0.45, color='black') + 
-  labs(title = "Number of Flight Delays by Airline (Based on Arrival Time)", x = "Airline", y = "Number of Delays") + 
-  scale_y_continuous(labels=,) + 
-  coord_flip() + theme(plot.title = element_text(hjust = 0.5))
-
-weekdays_df <- delayed_otd95 %>%
-  select(UniqueCarrier, DayOfWeek) %>%
-  group_by(UniqueCarrier, DayOfWeek) %>%
-  dplyr::summarise(n = length(DayOfWeek), .groups = 'keep') %>%
-  data.frame()
 
