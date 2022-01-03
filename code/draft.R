@@ -1,11 +1,11 @@
 # load libraries
 library(tidyverse)
-library(reshape2)
+# library(reshape2)
 library(data.table)
-library(zoo)
-library(hms)
-
-
+library(lubridate)
+# library(zoo)
+# library(hms)
+library(DBI)
 # library(skimr)
 
 setwd("~/../Joshua PFDS/r/coursework/data")
@@ -16,6 +16,16 @@ asTime <- function(x, format) {
     as_hms()
   }
 # as.ITime(format = "%H:%M")}
+
+if (file.exists("flight_data.db"))
+  file.remove("flight_data.db")
+
+# Create a connection to database
+conn <- dbConnect(RSQLite::SQLite(), "flight_data.db")
+
+
+
+
 
 
 # load data
@@ -82,7 +92,7 @@ fd_raw %>%
 fd_raw %>% 
   count(Cancelled == 1 | Diverted == 1 )
 
-missing_values
+print(missing_values)
 
 # As observed, there are some connections between the number of cancelled or diverted flights
 # and the missing values. More specifically, the number of missing values in departure 
@@ -342,8 +352,8 @@ plane_date <- merge(fd_comp, plane_data, by.x = "TailNum", by.y = "tailnum",
 plane_date %>% 
   summarise(across(everything(), ~ sum(is.na(.)))) %>% 
   t() %>% as.data.frame() %>% 
-  rename(misVal = 1) %>% 
-  filter(misVal > 0)
+  rename(missing_values = 1) %>% 
+  filter(missing_values > 0)
 
 # Since we are interested in the age of the planes versus delay, we shall drop records
 # with missing data.
@@ -501,57 +511,20 @@ fd_routes %>%
   arrange(desc(count))
 
 -----------------------------------------------------------------------------------------------
-# # For each month, we calculate the change in flights by carrier
+-----------------------------------------------------------------------------------------------
+
+# # Multiple Bar chart - Number of Flights Inbound by Destinations
 # fd_routes %>% 
-#   group_by(Year, Month, route, UniqueCarrier) %>% 
-#   summarise(count = n())
-#   
-# monthly_rep <- fd_routes %>% 
-#   group_by(Month, route) %>% 
-#   summarise(count = n()) %>% 
-#   arrange(route) %>% 
-#   group_by(route) %>% 
-#   mutate(
-#     MoM = round((count - lag(count, n = 1, default = NA))*100/ lag(count, n = 1, default = NA), 2)
-#   ) 
-# 
-# route_count <- fd_routes %>%
-#   group_by(Month, route) %>%
+#   group_by(Dest, Month) %>% 
 #   summarise(count = n()) %>%
-#   spread(key = route, value = count)
+#   mutate(Month = month.abb[Month] %>% factor(levels = month.abb)) %>% 
+#   ggplot(aes(x = Month, y = count)) +
+#   geom_bar(stat = "identity", fill = "pink") +
+#   facet_wrap(~Dest, ncol = 13) +
+#   theme_minimal() +
+#   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 # 
-# perlag <- monthly_rep %>%
-#   mutate(Month  = factor(Month, levels = c(1:12))) %>% 
-#   select(Month, route, MoM) %>% 
-#   spread(key = route, value = MoM)
-# 
-# 
-# report <- mapply(rbind, route_count, perlag) 
-# 
-# report <- t(report[,-1])
-# 
-# col_lab1 <- as.data.frame(month.abb)
-# col_lab2 <- rep("MoM (%)", 12) %>% 
-#   as.data.frame()
-# 
-# report_label <- mapply(rbind, col_lab1, col_lab2)
-# 
-# colnames(report) <- as.character(report_label)
-
-------------------------------------------------------------------------------------------------
-
-# Multiple Bar chart - Number of Flights Inbound by Destinations
-fd_routes %>% 
-  group_by(Dest, Month) %>% 
-  summarise(count = n()) %>%
-  mutate(Month = month.abb[Month] %>% factor(levels = month.abb)) %>% 
-  ggplot(aes(x = Month, y = count)) +
-  geom_bar(stat = "identity", fill = "pink") +
-  facet_wrap(~Dest, ncol = 13) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
-
-# The top 3 most popular destination seems to be (in no order) ATL, DFW, ORD. 
+# # The top 3 most popular destination seems to be (in no order) ATL, DFW, ORD. 
 
 # Summary table for number of flights by destination per month
 fd_mth <- fd_comp %>% 
@@ -592,26 +565,26 @@ per_fd_mth %>%
   facet_wrap(~dest, ncol = 13)
 
 # In general, people seem to fly less in February as the proportion of flights appears
-# to decline on February across the destinations used in the graph. Eg. Flights inbound 
+# to decline on February across the destinations used to graph. E.g. Flights inbound 
 # to SEA is lowest in February and higher in August.
 
-# Check popularity of destination by number of flight inbound by month
-fd_routes %>% 
-  group_by(Dest, Month) %>% 
-  summarise(count = n()) %>% 
-  arrange(desc(count))
-
-# Multiple Bar Plot - Number of Flights by Month by Flights outbound from ORD (Chicago)
-fd_routes %>% 
-  filter(Origin == "ORD") %>% 
-  group_by(Month, route) %>% 
-  summarise(count = n()) %>%
-  mutate(Month = month.abb[Month] %>% factor(levels = month.abb)) %>% 
-  ggplot(aes(x = Month, y = count)) +
-  geom_bar(stat = "identity", fill = "lightblue") +
-  facet_wrap(~route, ncol = 13) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+# # Check popularity of destination by number of flight inbound by month
+# fd_routes %>% 
+#   group_by(Dest, Month) %>% 
+#   summarise(count = n()) %>% 
+#   arrange(desc(count))
+# 
+# # Multiple Bar Plot - Number of Flights by Month by Flights outbound from ORD (Chicago)
+# fd_routes %>% 
+#   filter(Origin == "ORD") %>% 
+#   group_by(Month, route) %>% 
+#   summarise(count = n()) %>%
+#   mutate(Month = month.abb[Month] %>% factor(levels = month.abb)) %>% 
+#   ggplot(aes(x = Month, y = count)) +
+#   geom_bar(stat = "identity", fill = "lightblue") +
+#   facet_wrap(~route, ncol = 13) +
+#   theme_minimal() +
+#   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 
 -----------------------------------------------------------------------------------------------
 
@@ -640,6 +613,9 @@ fd_routes %>%
 
 # ORD - Chicago O'Hare International has the most number of outgoing flights yearly.
 # We will use fight data from the ORD airport to continue our analysis.
+
+# Multiple Time Series Chart - Number of Outbound Flights from ORD airport over Time by 
+# Destination
 fd_routes %>% 
   mutate(date = with(fd_routes, paste(Year, Month, sep = "-")) %>% as.yearmon()) %>% 
   filter(Origin == "ORD") %>% 
@@ -647,97 +623,173 @@ fd_routes %>%
   summarise(count = n()) %>% 
   ggplot(aes(x = date, y = count)) +
   geom_line() +
-  facet_wrap(~route, ncol = 13) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+  labs(title = "Number of Outbound Flights from ORD airport by Destination",
+       x = "Date",
+       y = "Number of Flights") +
+  theme_get() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  facet_wrap(~route, ncol = 13)
 
 # From the graphs, we are able to observe the trend of outgoing flights from ORD (Chicago) 
 # over the years from 1995 to 1996 (left to right). Majority of the routes showed consistent
 # outgoing flights with a few notable ones, namely "ORD-BOS", "ORD-FLL", "ORD-LAX", "ORD-SEA".
 # Flights from Chicago to Los Angeles has picked up from Mar 1995 and remained consistently high.
 
-------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------
 
-  # ord_rep <- fd_routes %>% 
-#   filter(Origin == "ORD") 
-# 
-# ord_rep$date <- with(ord_rep, paste(Year, Month, sep = "-")) %>% 
-#   as.yearmon()
-# 
-# 
-# ord_rep <- ord_rep %>% 
-#   group_by(date, route) %>%
-#   summarise(count = n()) %>% 
-#   arrange(route) %>% 
-#   group_by(route) %>% 
-#   mutate(
-#     MoM = round((count - lag(count, n = 1, default = NA))*100/ lag(count, n = 1, default = NA), 2)
-#   ) 
-#   
-# ord_rep %>% 
-#   ggplot(aes(x = date, y = count)) +
-#   geom_line() +
-#   facet_wrap(~route, ncol = 13) +
-#   theme_minimal() +
-#   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+htmap <- fd_comp %>% 
+  select(Year, Month, DayOfWeek, Delayed, flight_date) %>% 
+  mutate(Month = Month %>% factor(labels = month.abb),
+         DayOfWeek = DayOfWeek %>% factor(levels = rev(c(7, 1, 2, 3, 4, 5, 6)),
+                                          labels = rev(c("Sun", "Mon", "Tue", "Wed", 
+                                                     "Thu", "Fri", "Sat"))),
+         weekmth = stringi::stri_datetime_fields(flight_date)$WeekOfMonth
+  ) %>% 
+  group_by(Year, Month, weekmth, DayOfWeek) %>% 
+  filter(Delayed == 1) %>% 
+  summarise(total_delay = n())
 
+htmap %>% 
+  ggplot(aes(weekmth, DayOfWeek, fill = total_delay)) +
+  geom_tile(colour = "black") +
+  theme_grey() +
+  scale_fill_gradient(low = "white", high = "red") +
+  scale_x_discrete(limit = c(1:5)) +
+  facet_grid(Year ~ Month)
 
+----------------------------------------------------------------------------------------------
+# Can you detect cascading failures as delays in one airport create delays in others?
 
-# count, location, time
+# Our data are flights carried by 10 different carriers in the USA
 
   
-------------------------------------------------------------------------------------------------
+# In this study, we shall analyze for cascading delays between the top 10 airports with 
+# the highest traffic in the USA
+# by number of flights. Lets check which 10 states carries the most flights.
+bz_airports <- fd_comp %>% # filter(Year == 1996) %>% 
+  group_by(Origin) %>%
+  summarise(Count = n()) %>%
+  arrange(desc(Count)) %>% 
+  select(Origin) %>%
+  head(Origin, n=10) %>% 
+  unlist()
+ 
+## would be great if this returns the carrier description as well
+
+# Stratified by timeframe
+# recall: departure time from 1600-1900 has the most number of delayed flights
+
+# fd_comp$route <- with(fd_comp, paste(Origin, Dest, sep = "-")) 
+
+routes <- fd_comp %>% # filter(Year == 1996) %>% 
+  select(CRSDepTime, DepDel15, DepDelay, Origin, Dest, route) %>%
+  group_by(CRSDepTime, Origin, Dest, route) %>% 
+  summarise(delay_count = sum(DepDel15)) %>% 
+  filter(delay_count != 0) %>% 
+  merge(airports, by.x = "Origin", by.y = "iata",
+        all.x = TRUE, all.y = FALSE) %>% 
+  rename(airport_o = airport, lat_o = lat, long_o = long) %>% 
+  select(-city, -state, -country) %>% 
+  merge(airports, by.x = "Dest", by.y = "iata",
+        all.x = TRUE, all.y = FALSE) %>% 
+  rename(airport_d = airport, lat_d = lat, long_d = long) %>% 
+  select(-city, -state, -country) 
   
-# For each day of the week, calculate the number of delays by each carrier
-carrier_del <- flight_data_raw %>% 
-  filter(DepDelay >= 15) %>% 
-  group_by(DayOfWeek, UniqueCarrier) %>% 
-  summarise(DelayCount = n()) 
+routes2 <- routes %>% 
+  filter(Origin == "ORD",
+         Dest %in% bz_airports,
+         CRSDepTime > 1600 & CRSDepTime <= 1900)
 
-# reshape data frame to a wide format to improve readability  
-carrier_del_wide <- dcast(carrier_del, 
-                          formula = UniqueCarrier ~ DayOfWeek, 
-                          value.var = "DelayCount")
-
-# For each day of the week, calculate the number of delays and the change from the previous 
-# day of the week by each carrier
-carrier_del_chg <- flight_data_raw %>%
-  filter(DepDelay >= 15) %>% 
-  group_by(UniqueCarrier, DayOfWeek) %>% 
-  summarise(DelayCount = n()) %>% 
-  mutate(Change = DelayCount -lag(DelayCount)) %>% 
-  dcast(formula = UniqueCarrier ~ DayOfWeek,
-        value.var = "Change") 
-
-# Rename the columns of the table to indicate changes
-colnames(carrier_del_chg) <- c("UniqueCarrier", "Mon-Chg", "Tue-Chg", "Wed-Chg", 
-                               "Thu-Chg", "Fri-Chg", "Sat-Chg", "Sun-Chg")
-
-# Merge carrier delay by day of week and changes 
-joined_crrdel <- merge(carrier_del_wide, carrier_del_chg, by.x = "UniqueCarrier",
-                       all.x = TRUE, all.y = TRUE) %>% 
-  select(UniqueCarrier, Mon, `Mon-Chg`, Tue, `Tue-Chg`, Wed, `Wed-Chg`,
-         Thu, `Thu-Chg`, Fri, `Fri-Chg`, Sat, `Sat-Chg`, Sun, `Sun-Chg`)
-
-# Plot number of delays by each carrier for each day of the week
-carrier_del %>% 
-  ggplot(aes(x = DayOfWeek, y = DelayCount, group = UniqueCarrier)) + 
-    geom_line(aes(color = UniqueCarrier), size = 2) + 
-    labs(title = "Flight Delays by Airline (For Each Day of the Week)", 
-         x = "Day of the Week", y = "Number of Delays") + 
-    theme_light() + 
-    theme(plot.title = element_text(hjust=0.5)) + 
-    geom_point(shape=21, size=3, color="black", fill="white") + 
-    scale_y_continuous(labels=,)
-
-------------------------------------------------------------------------------------------------
+routes3 <- routes %>% 
+  filter(Origin %in% bz_airports,
+         Dest %in% bz_airports,
+         CRSDepTime > 1900 & CRSDepTime <= 2200)
 
 
-# Calculates the average arrival delays across the carriers
-fd_comp %>% 
-  group_by(UniqueCarrier) %>% 
-  summarise(Avg_ArrDelay = mean(ArrDelay)) %>% 
-  arrange(Avg_ArrDelay)
+state <- map_data("state") 
 
+ggplot() + 
+  geom_polygon(data=state, aes(x=long, y=lat, group = group),
+               fill = "darkgrey",
+               color = "white") + 
+  geom_curve(data = routes2, aes(x = long_o, y = lat_o, xend = long_d, yend = lat_d, 
+                                 color = delay_count),
+             arrow = arrow(length = unit(0.2, "cm")), 
+             size = 0.6) +
+  geom_label(data = routes2, nudge_x = 0, nudge_y = -1,
+                 aes(x = long_d, y = lat_d, label = Dest)) +
+  geom_label(data = routes2, nudge_x = 1, nudge_y = -0, color = 'red',
+                   aes(x = long_o, y = lat_o, label = Origin)) +
+  labs(title = paste("Visualizing Cascading Delays in Flights between the",
+                     "Top 10 Busiest Airports in the US"),
+       subtitle = "Timeframe: 1600 - 1900") +
+  scale_color_gradient(low = "white", high = "blue") +
+  theme(panel.background=element_blank(),
+        axis.title.x=element_blank(), axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank(), axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()) + 
+  coord_fixed(1.3) 
 
+ggplot() + 
+  geom_polygon(data=state, aes(x=long, y=lat, group = group),
+               fill = "darkgrey",
+               color = "white") + 
+  geom_curve(data = routes3, aes(x = long_o, y = lat_o, xend = long_d, yend = lat_d, 
+                                 color = delay_count),
+             arrow = arrow(length = unit(0.2, "cm")), 
+             size = 0.6) +
+  geom_label(data = routes3, nudge_x = 0, nudge_y = -1,
+                 aes(x = long_d, y = lat_d, label = Dest)) +
+  labs(title = paste("Visualizing Cascading Delays in Flights between the",
+                     "Top 10 Busiest Airports in the US"),
+       subtitle = "Timeframe: 1900 - 2200") +
+  scale_color_gradient(low = "white", high = "blue") +
+  theme(panel.background=element_blank(),
+        axis.title.x=element_blank(), axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank(), axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()) + 
+  coord_fixed(1.3) 
 
+----------------------------------------------------------------------------------------------
+  
+  
+lagged_delays <- fd_comp %>% 
+  filter(CRSDepTime > 1900 & CRSDepTime <= 2200) %>% # Timeframe: 1900 - 2200
+  select(DepTime, DepDelay, Origin, Dest) %>% 
+  arrange(Origin, DepTime) %>%
+  group_by(Origin) %>%
+  mutate(dep_delay_lag = lag(DepDelay)) %>%
+  filter(!is.na(DepDelay), !is.na(dep_delay_lag))
+
+# We plot the relationship between the average delay time of a flight against the time 
+# delayed for all the previous flight. 
+
+lagged_delays %>%
+  filter(Origin %in% bz_airports) %>% 
+  group_by(dep_delay_lag) %>%
+  summarise(dep_delay_mean = mean(DepDelay)) %>% 
+  ggplot(aes(y = dep_delay_mean, x = dep_delay_lag)) +
+  geom_point() +
+  labs(y = "Departure Delay", x = "Previous Departure Delay") +
+  scale_x_continuous(breaks = seq(0, 1500, by = 120))
+
+# The result shows a positive relationship between the previous delay and the subsequent 
+# flights' departure delay. The increase in variability after the 480 (mins) mark, 
+# indicate the strength of the relationship cooling off after about 8-hours. This could
+# suggest flights with shorter delays having a stronger effect on the subsequent flights 
+# disability to depart on-time while flights with longer delays have poorer effect. 
+# This makes sense as long-delayed flights can be interspersed with flights leaving on-time.
+
+lagged_delays %>%
+  filter(Origin %in% bz_airports) %>% 
+  group_by(Origin, dep_delay_lag) %>%
+  summarise(dep_delay_mean = mean(DepDelay)) %>%
+  ggplot(aes(y = dep_delay_mean, x = dep_delay_lag)) +
+  geom_point() +
+  labs(y = "Departure Delay", x = "Previous Departure Delay") +
+  scale_x_continuous(breaks = seq(0, 1500, by = 120)) +
+  facet_wrap(~ Origin, ncol=2)
