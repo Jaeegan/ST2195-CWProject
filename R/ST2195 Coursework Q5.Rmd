@@ -1,0 +1,234 @@
+---
+title: "ST2195 Coursework Q5 - R"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r, setup, include = FALSE, echo = FALSE, warning = FALSE}
+knitr::opts_knit$set(root.dir = "~/../Joshua PFDS/r/coursework/data")
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## **Use the available variables to construct a model that predicts delays**
+
+#### **Load libraries**
+
+```{r}
+library(DBI)
+library(tidyverse)
+library(mlr3)
+library(mlr3learners)
+library(mlr3pipelines)
+library(mlr3tuning)
+library(mlr3viz)
+```
+
+Open connection to the database
+
+```{r}
+conn <- dbConnect(RSQLite::SQLite(), "flights.db")
+
+flight_data <- tbl(conn, "flight_data")
+```
+
+Majority of the data preparation has been done during the earlier stages of the analysis.
+
+#### **Overview of Delays**
+
+```{r}
+flight_data %>%
+  group_by(DepDel15) %>%
+  count(ArrDel15)
+```
+
+There is a positive relationship between `DepDel15` and `ArrDel15`. Intuitively, delay in arrivals increases when delays on departure increase. Hence, departure delay is a factor in determining arrival delays.
+
+#### **Arrival Delay for Unique Carrier**
+
+```{r, fig.width = 10, fig.height = 5, dpi = 300}
+flight_data %>%
+  group_by(UniqueCarrier) %>%
+  summarise(per_del = mean(ArrDel15),
+            count = n()) %>% 
+  arrange(desc(per_del)) %>% 
+  ggplot(aes(x = reorder(UniqueCarrier, -per_del), y = per_del)) +
+  geom_bar(stat = "identity", aes(fill = count)) +
+  labs(title = "Percentage of Arrival Delay by Carrier",
+       x = "Carrier",
+       y = "Percentage of Arrival Delay") +
+  theme_grey() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5)) +
+  scale_y_continuous(labels = scales::percent)
+```
+
+There is no obvious trend between the number of flights and arrival delays. However, by observation, some carriers (darker colored) have a higher percentage of arrival delays even though they rank lower in terms of number of flights. Thus, carrier might be a factor in determining arrival delays.
+
+#### **Correlation Analysis**
+
+Before proceeding to the modeling stage:
+
+Check for correlation between the numerical variables of the model data
+
+```{r, fig.width = 10}
+corr_data <- dbGetQuery(conn,
+                        "SELECT Year, Month, DayofMonth, DayOfWeek, DepTime, CRSDepTime,
+                        ArrTime, CrsArrTime, FlightNum, ActualElapsedTime, CRSElapsedTime,
+                        AirTime, ArrDelay, DepDelay, Distance, TaxiIn, TaxiOut, DepDel15,
+                        ArrDel15
+                        FROM flight_data
+                        WHERE Distance IS NOT NULL")
+  
+corr_matrix <- round(cor(corr_data), 2)
+
+corr_matrix <- corr_matrix %>%
+  as.data.frame()
+
+corr_matrix %>%
+  kableExtra::kbl() %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "condensed"),
+                            font_size = 7)
+```
+
+```{r, fig.width = 10, fig.height = 8, dpi = 300}
+corr_matrix %>%
+  ggcorrplot::ggcorrplot(hc.order = TRUE,
+                         type = "upper", 
+                         lab = TRUE,
+                         lab_size = 4)
+```
+
+#### **Data Modeling**
+
+`features`: The list of variables that might be meaningful factors in determining delays
+
+```{r}
+features <- c("season", "UniqueCarrier", "DepTime", "DepDel15",
+              "ActualElapsedTime", "Distance", "TaxiOut", "ArrDel15")
+
+model_data <- flight_data %>% 
+  filter(Year == 2000) %>% 
+  select(all_of(features)) %>% 
+  collect()
+
+glimpse(model_data)
+```
+
+Convert to factors where required
+
+```{r}
+model_data$season <- factor(model_data$season, ordered = TRUE,
+                            levels = c("Winter", "Spring", "Summer", "Autumn"))
+model_data$UniqueCarrier <- factor(model_data$UniqueCarrier)
+model_data$ArrDel15 <- factor(model_data$ArrDel15)
+model_data$DepDel15 <- factor(model_data$DepDel15)
+
+str(model_data)
+```
+
+Get the training and test sets
+
+```{r}
+n <- nrow(model_data)
+
+train_set <- sample(n, round(0.5*n))
+
+test_set <- setdiff(1:n, train_set)
+```
+
+#### **Set up task**
+
+```{r}
+task <- TaskClassif$new('flight_delay', backend=model_data, target = 'ArrDel15')
+
+measure <- msr('classif.ce')
+
+print(task)
+```
+
+Some of the variables are factor for which some models do not support
+
+Convert them to numerical values (The following will be used later)
+
+```{r}
+fencoder <- po("encode", method = "treatment",
+  affect_columns = selector_type("factor"))
+ord_to_int <- po("colapply", applicator = as.integer,
+  affect_columns = selector_type("ordered"))
+```
+
+#### **Logistic Regression**
+
+```{r}
+learner_lr <- lrn("classif.log_reg")
+gc_lr <- po('imputemean') %>>%
+  po(learner_lr)
+glrn_lr <- GraphLearner$new(gc_lr)
+
+glrn_lr$train(task, row_ids = train_set)
+glrn_lr$predict(task, row_ids = test_set)$score() 
+```
+
+#### **Gradient Boosting**
+
+```{r}
+learner_gb <- lrn("classif.xgboost")
+gc_gb <- po('imputemean') %>>%
+  fencoder %>>% ord_to_int %>>%
+  po(learner_gb)
+glrn_gb <- GraphLearner$new(gc_gb)
+
+glrn_gb$train(task, row_ids = train_set)
+
+glrn_gb$predict(task, row_ids = test_set)$score() 
+```
+
+#### **Classification Trees**
+
+```{r}
+learner_tree <- lrn("classif.rpart")
+
+gc_tree <- po('imputemean') %>>%
+  po(learner_tree)
+glrn_tree <- GraphLearner$new(gc_tree)
+
+glrn_tree$train(task, row_ids = train_set)
+glrn_tree$predict(task, row_ids = test_set)$score() 
+```
+
+#### **Construct benchmark design and run comparisons**
+
+Set up seed for reproducible results
+
+```{r, results = "hide"}
+set.seed(121)
+
+lrn_list <- list(
+  glrn_lr,
+  glrn_gb,
+  glrn_tree
+)
+
+bm_design <- benchmark_grid(task = task, resamplings = rsmp('cv', folds = 3),
+                            learners = lrn_list)
+
+bmr <- benchmark(bm_design, store_models = TRUE)
+```
+
+```{r, fig.width = 10, fig.height = 5, dpi = 300}
+autoplot(bmr) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+bmr$aggregate(measure) %>% 
+  kableExtra::kbl() %>% 
+  kableExtra::kable_styling(bootstrap_options = c("striped", "condensed"), 
+                            full_width = TRUE)
+```
+  
+The baseline algorithm selected is Logistic Regression due to its simplicity and speed. The other two algorithms were selected for comparison.
+
+Overall, the three models have similar distribution in errors. But `log_reg` has the lowest error in predicting delays. Hence, `log_reg` is the better model out of the three.
+
+```{r}
+dbDisconnect(conn)
+```

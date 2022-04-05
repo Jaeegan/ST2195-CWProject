@@ -1,0 +1,553 @@
+---
+title: "ST2195 Coursework - R"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r, setup, include = FALSE, echo = FALSE, warning = FALSE}
+knitr::opts_knit$set(root.dir = "~/../Joshua PFDS/r/coursework/data")
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+#### **Set up, load libraries and data**
+
+```{r}
+library(DBI)
+library(tidyverse)
+library(lubridate)
+```
+
+Set up function to coerce numeric strings to hms class with `as_hms`
+
+```{r}
+asTime <- function(dateString, units = NULL) {
+  strptime(dateString, "%H%M") %>% 
+    round(units) %>% 
+    format("%H:%M:%S") %>% 
+    hms::as_hms()
+}
+```
+
+Set up and open connection to the database
+
+```{r}
+if (file.exists("flights.db"))
+  file.remove("flights.db")
+
+conn <- dbConnect(RSQLite::SQLite(), "flights.db")
+```
+
+Load and write data to database
+
+```{r}
+carriers <- read.csv("carriers.csv", header = TRUE)
+airports <- read.csv("airports.csv", header = TRUE)
+plane_data <- read.csv("plane-data.csv", header = TRUE)
+
+dbWriteTable(conn, "airports", airports)
+dbWriteTable(conn, "carriers", carriers)
+dbWriteTable(conn, "plane_data", plane_data)
+
+for (i in c(1995:2000)) {
+  fd <- read.csv(paste0(i, ".csv"), header = TRUE)
+  if (i == 1995) {
+    dbWriteTable(conn, "flight_data", fd, overwrite = TRUE)
+  } else {
+    dbWriteTable(conn, "flight_data", fd, append = TRUE)
+  }
+}
+```
+
+Create local reference to database
+
+```{r}
+flight_data <- tbl(conn, "flight_data")
+glimpse(flight_data)
+```
+
+#### **Handle Missing Values**
+
+Before proceeding with the analysis:
+
+Check for the number of missing values in each column
+
+```{r}
+missing_values <- flight_data %>% 
+  summarise(across(everything(), ~ sum(is.na(.)))) %>% 
+  collect() %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rename(count = 1) %>% 
+  filter(count > 0) %>% 
+  arrange(count)
+
+print(missing_values)
+```
+
+Visualize the missing values on a bar chart and remove any variables with, NA = total number of observations
+
+```{r}
+total_obs <- flight_data %>%  
+  count() %>%
+  collect()
+
+missing_values %>% 
+  rownames_to_column() %>% 
+  filter(count < as.numeric(total_obs)) %>% 
+  ggplot() +
+  geom_bar(aes(x=rowname, y=count), stat = 'identity') +
+  labs(x='Variable', y="Number of Missing Values", 
+       title='Bar Chart of Missing Values') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+There might be some relationship between the missing values across the variables. Intuitively, canceled or diverted flights might explain the missing values.
+
+Check the number of canceled or diverted flights
+
+```{r}
+flight_data %>% 
+  count(Cancelled == 1)
+
+flight_data %>% 
+  count(Cancelled == 1 | Diverted == 1 )
+```
+
+There is a relationship between the number of canceled or diverted flights and the missing values. More specifically, canceled and diverted flight causes missing values in departure and arrival time.
+
+Hence, remove the records with missing values
+
+```{r}
+flight_data <- flight_data %>% 
+  filter(Cancelled == 0, Diverted == 0) 
+```
+
+#### **Clean and Enrich data**
+
+Drop columns that provide little to no information for further analysis
+
+```{r}
+fd_mod <- flight_data %>% 
+  select(-c(Cancelled, Diverted, CancellationCode, CarrierDelay,
+            WeatherDelay, NASDelay, SecurityDelay, LateAircraftDelay)) %>% 
+  collect()
+
+# FlightNum, ActualElapsedTime, CRSElapsedTime, AirTime, TaxiIn, TaxiOut
+```
+
+Make modifications to data where necessary:\
+`DepDel15`: binary indicator\* for flights with departure delay time \>= 15 mins\
+`ArrDel15`: binary indicator\* for flights with arrival delay time \>= 15 mins\
+\*(0 = not delayed, 1 = delayed)
+
+```{r}
+fd_mod <- fd_mod %>% 
+  mutate(flight_date = with(fd_mod, paste(Year, Month, DayofMonth, sep = "/")),
+         season = ifelse(Month %in% 3:5, "Spring", 
+                         ifelse(Month %in% 6:8, "Summer", 
+                                ifelse(Month %in% 9:11, "Autumn", "Winter"))) %>% 
+           factor(levels = c("Winter", "Spring", "Summer", "Autumn")),
+         DepDel15 = ifelse(DepDelay >= 15, 1, 0),
+         ArrDel15 = ifelse(ArrDelay >= 15, 1, 0)) %>% 
+  collect()
+
+glimpse(fd_mod)
+```
+
+Write changes to database
+
+```{r}
+dbWriteTable(conn, "flight_data", fd_mod, overwrite = TRUE)
+
+flight_data <- tbl(conn, "flight_data")
+```
+
+### **When is it best to fly to minimize delays?**
+
+The columns `DepDel15` and `ArrDel15` are binary indicators for departure and arrival delays.
+
+The term "delay" in this analysis is classified where time delayed exceeds a grace period of 15 minutes. Despite having late departures, flights may arrive on time. Hence `ArrDel15` (arrival delay \>= 15) will be used to analyze when is best to fly to minimize delays.
+
+#### **General overview of arrival delays**
+
+```{r, fig.width = 10, fig.height = 5, dpi = 1000}
+arrdel_htmap <- dbGetQuery(conn, 
+                           "SELECT Year, Month, DayOfWeek, flight_date, ArrDel15
+                           FROM flight_data
+                           WHERE ArrDel15 == 1")
+
+arrdel_htmap <- arrdel_htmap %>% 
+  mutate(Month = Month %>% factor(labels = month.abb),
+         DayOfWeek = DayOfWeek %>% factor(levels = rev(c(7, 1, 2, 3, 4, 5, 6)),
+                                          labels = rev(c("Sun", "Mon", "Tue", "Wed", 
+                                                         "Thu", "Fri", "Sat"))),
+         flight_date = flight_date %>% as.Date("%Y/%m/%d"),
+         WeekofMonth = stringi::stri_datetime_fields(flight_date)$WeekOfMonth) %>% 
+  group_by(Year, Month, WeekofMonth, DayOfWeek) %>% 
+  summarise(total_delay = n())
+
+arrdel_htmap %>% 
+  ggplot(aes(WeekofMonth, DayOfWeek, fill = total_delay)) +
+  geom_tile(colour = "black") +
+  labs(title = "Arrival Delays Overview",
+      x = "Month / Week of Month",
+      y = "Year / Day of Week") +
+  theme_grey() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5)) +
+  scale_fill_gradient(low = "white", high = "red") +
+  scale_x_discrete(limits = factor(1:5)) +
+  facet_grid(Year ~ Month) +
+  guides(fill = guide_legend(title = "Arrival Delays")) 
+```
+
+The color gradient denotes the number of arrival delays. By observation, September to November has the least number of arrival delays.
+
+#### **Best Season to travel**
+
+```{r, fig.width = 10, fig.height = 5, dpi = 300}
+arrdel_dom <- dbGetQuery(conn,
+                         "SELECT DayofMonth, season, AVG(ArrDel15) AS per_del
+                         FROM flight_data
+                         GROUP BY DayofMonth, season")
+
+arrdel_dom %>% 
+  ggplot(aes(DayofMonth, per_del, group = season)) +
+  geom_line(aes(color = season), size = 1) +
+  labs(title = "Percentage of Arrival Delay by Season",
+       x = "Day of Month",
+       y = "Percentage of Arrival Delay") +
+  theme_grey() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5)) +
+  scale_x_discrete(limits = factor(1:31)) +
+  scale_y_continuous(labels = scales::percent)
+```
+
+Autumn (the most bottom line) has the lowest percentage of flights delayed on arrival and hence is the Best Season to fly.
+
+#### **Best Month to travel**
+
+```{r, fig.width = 10, fig.height = 5, dpi = 300}
+arrdel_mth <- dbGetQuery(conn,
+                         "SELECT Month, AVG(ArrDel15) AS per_del
+                         FROM flight_data
+                         GROUP BY Month")
+
+arrdel_mth %>% 
+  ggplot(aes(Month, per_del)) +
+  geom_bar(stat = "identity", aes(fill = per_del)) +
+  geom_text(aes(label = paste(round(per_del, 4)*100, "%")),
+            size = 3, vjust = -1) +
+  scale_fill_gradientn(colors = rev(colorspace::heat_hcl(3))) +
+  labs(title = "Percentage of Arrival Delay by Month",
+       x = "Month",
+       y = "Percentage of Arrival Delay") +
+  theme_grey() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5)) +
+  scale_x_discrete(limits = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+                              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")) +
+  scale_y_continuous(labels = scales::percent) +
+  guides(fill = guide_legend(title = "Percentage"))  
+```
+
+The best Month(s) to fly is in May (Spring), September, and October (Autumn), with the probability of flights delay on arrival at 19.77%, 16.54%, and 18.71%, respectively.
+
+#### **Best Week to travel**
+
+```{r, fig.width = 10, fig.height = 5, dpi = 300}
+arrdel_wk <- dbGetQuery(conn,
+                        "SELECT Month, flight_date, ArrDel15
+                        FROM flight_data")
+
+arrdel_wk %>% 
+  mutate(flight_date = flight_date %>% as.Date("%Y/%m/%d"),
+         WeekofMonth = stringi::stri_datetime_fields(flight_date)$WeekOfMonth) %>%
+  group_by(Month, WeekofMonth) %>% 
+  summarise(per_del = mean(ArrDel15)) %>% 
+  ggplot(aes(WeekofMonth, per_del)) +
+  geom_bar(stat = "identity", aes(fill = per_del)) +
+  geom_text(aes(label = paste(round(per_del, 4)*100, "%")),
+            size = 2.8, hjust = 0.8, angle = 90) +
+  scale_fill_gradientn(colors = rev(colorspace::heat_hcl(2))) +
+  labs(title = "Percentage of Arrival Delay by Week by Month",
+       x = "Week of Month",
+       y = "Percentage of Arrival Delay") +
+  theme_grey() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5)) +
+  scale_x_discrete(limits = c("w1", "w2", "w3", "w4", "w5", "w6")) +
+  scale_y_continuous(labels = scales::percent) +
+  guides(fill = guide_legend(title = "Percentage")) +
+  facet_wrap(~ Month, labeller = as_labeller(c(`1` = "Jan", `2` = "Feb", `3` = "Mar", 
+                                               `4` = "Apr", `5` = "May", `6` = "Jun", 
+                                               `7` = "Jul", `8` = "Aug", `9` = "Sep",
+                                               `10` = "Oct", `11` = "Nov", `12` = "Dec")))
+```
+
+During the Autumn season, the first week of the Month is when it is best to fly. Statistically, the average percentage of arrival delays in the first week of the Autumn Season is 17.27%.
+
+#### **Best Day of week to travel**
+
+```{r, fig.width = 10, fig.height = 5, dpi = 300}
+arrdel_dy <- dbGetQuery(conn,
+                        "SELECT DayOfWeek, season, AVG(ArrDel15) AS per_del
+                        FROM flight_data
+                        GROUP BY DayOfWeek, season")
+
+arrdel_dy %>% 
+  ggplot(aes(DayOfWeek, per_del)) +
+  geom_bar(stat = "identity", aes(fill = per_del)) +
+  geom_text(aes(label = paste(round(per_del, 4)*100, "%")),
+            vjust = -1, size = 3) +
+  scale_fill_gradientn(colors = rev(colorspace::heat_hcl(4))) +
+  labs(title = "Percentage of Arrival Delay by Day of Week",
+       x = "Day of Week",
+       y = "Percentage of Arrival Delay") +
+  theme_grey() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5)) +
+  scale_x_discrete(limits = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")) +
+  scale_y_continuous(labels = scales::percent) +
+  guides(fill = guide_legend(title = "Percentage")) +
+  facet_wrap(~ season)
+```
+
+Diving deeper into the best day of the week to fly, the Saturdays of the Autumn season has percentage flights delayed on average 14.10%. Generally speaking, Saturdays are the best day of the week to fly regardless of the season.
+
+Summary:\
+Winter: Saturday - 21.79%\
+Spring: Saturday - 16.85%\
+Summer: Saturday - 20.69%\
+Autumn: Saturday - 14.10%
+
+#### **Best Time to travel**
+
+Taking the `CRSDepTime` (Scheduled Departure Time) and binned every hour as a group. (24 groups in total)
+
+```{r, fig.width = 10, fig.height = 5, dpi = 300}
+arrdel_tm <- dbGetQuery(conn, 
+                        "SELECT CRSDepTime, ArrDel15
+                        FROM flight_data
+                        WHERE ArrDel15 == 1")
+
+arrdel_tm <- arrdel_tm %>%
+  mutate(CRSDepTime = sprintf("%04d", arrdel_tm$CRSDepTime) %>%
+           asTime(units = "hours")) %>% 
+  group_by(CRSDepTime) %>%
+  summarise(delay_count = n()) 
+
+# Lets create a visualization - Number of Arrival Delays versus CRSDepTime
+arrdel_tm %>%
+  ggplot(aes(x = CRSDepTime, y = delay_count)) +
+  geom_line(color="#69b3a2", size = 1.5) +
+  labs(title = "Arrival Delays versus Scheduled Departure Time",
+       x = "Schedule Departure Time",
+       y = "Number of Arrival Delays") +
+  theme_grey() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        plot.title = element_text(size = 15, hjust = 0.5)) +
+  scale_x_time(labels = scales::label_time(format = "%H:%M"),
+               breaks = scales::date_breaks("1 hour"))
+```
+
+By observation, flight delays were low in the early morning and increased after 10:00 hours. Between 17:00 - 20:00 has the highest number of flights delayed, with the numbers declining towards midnight.
+
+Reduce the odds of flight delays by flying in the morning and avoiding flights that depart during 16:00 - 19:00 hours.
+
+## **Do older planes suffer more delays than newer planes?**
+
+There are multiple factors besides its chronological age to consider when evaluating the age of a plane. This analysis will take 11 years, the average age of a U.S. commercial aircraft as a guide for "old" planes.
+
+`neg_age`: proxy column for filtering invalid plane ages\
+`age`: dummy variable for age of the planes (0 = old planes, 1 = new planes.)
+
+```{r}
+plane_date <- dbGetQuery(conn, 
+                        "SELECT flight_date, issue_date, ArrDel15
+                        FROM (plane_data LEFT JOIN flight_data 
+                              ON plane_data.tailnum = flight_data.TailNum) 
+                        WHERE ArrDel15 >= 0")
+
+# Coerce dates to date class
+plane_date <- plane_date %>% 
+  mutate(flight_date = flight_date %>% as.Date("%Y/%m/%d"),
+         issue_date = issue_date %>% as.Date("%m/%d/%Y"))
+
+plane_date <- plane_date %>%
+  mutate(neg_age = ifelse(time_length(difftime(plane_date$flight_date,
+                                               plane_date$issue_date), "years") < 0, NA, 1),
+         age = ifelse(time_length(difftime(plane_date$flight_date,
+                                           plane_date$issue_date), "years") <= 11, 1, 0)) %>% filter(!is.na(neg_age))
+
+glimpse(plane_date)
+```
+
+#### *Re: Do older planes suffer more delays than newer plane?*
+
+Create a contingency table
+
+```{r}
+obsvtn <- plane_date %>% 
+  select(ArrDel15 , age) %>% 
+  mutate(age = factor(plane_date$age, c(0, 1), labels = c("old", "new")),
+         ArrDel15 = factor(plane_date$ArrDel15, c(0:1), labels = c("On-time", "Delayed"))) 
+
+xtbl_count <- table(obsvtn$age, obsvtn$ArrDel15)
+
+print(xtbl_count)
+
+# Row percentages
+xtbl_per <- prop.table(xtbl_count, 1)
+```
+
+Visualize the information on a side-by-side bar chart
+
+```{r, fig.width = 10, fig.height = 5, dpi = 300}
+xtbl_per %>%
+  as.data.frame() %>%
+  ggplot(aes(x = Var2, y = Freq, fill = Var1)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = scales::percent(Freq)),
+            vjust = -0.5, size = 4, position = position_dodge(width = 0.9)) +
+  labs(title = "Percentage of Planes by Flight Performance grouped by Aircraft Age",
+       x = "Flight Perfomance",
+       y = "Percentage of Planes") +
+  theme_grey() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5)) +
+  guides(fill = guide_legend(title = "Plane")) +
+  scale_y_continuous(labels = scales::percent)
+```
+
+Based on the visualization, there appears to be no association between the plane age and flight performance. To further confirm this result, we check for any statistical significance between the plane age and flight performance using the Chi-square test for association.
+
+#### **Chi-square test for association**
+
+H0: There is no association between plane age and flight performance \
+H1: There is such an association
+
+```{r}
+chisq.test(xtbl_count)
+```
+
+As the p-value = 0.28%, the null hypothesis is rejected at the 1% significance level. The results are highly significant and provide strong evidence for rejecting the null hypothesis to conclude an association between plane age and flight performance.
+
+Although the plane age and flight performance are statistically significant, its graphical visualization for the association is similar for both the age group, with only a 0.14% difference.
+
+In conclusion, the association between plane age and flight performance is small, consistent, and biologically insignificant. Hence, it is unlikely that older planes do suffer from more delays.
+
+## **How does the number of people flying between different locations change over time?**
+
+There is no information on the number of passengers abroad on each plane. Hence, the number of flights is used as a proxy for the indication of popularity.
+
+Check the airport with the most outbound flights
+
+```{r}
+fd_routes <- dbGetQuery(conn,
+                        "SELECT Year, Month, season, Origin, Dest
+                        FROM flight_data")
+
+fd_routes %>%
+  group_by(Year, Origin) %>% 
+  summarise(count = n()) %>%
+  arrange(desc(count))
+```
+
+ORD - Chicago O'Hare International airport has the highest number of outbound flights and hence is used as the sampling frame for this analysis.
+
+#### **Multiple Time Series Chart - Number of Outbound Flights from ORD airport over Time by Destination**
+
+```{r, fig.width = 10, fig.height = 10, dpi = 1000}
+fd_routes %>% 
+  mutate(route = with(fd_routes, paste(Origin, Dest, sep = "-")),
+         date = with(fd_routes, paste(Year, Month, sep = "-")) %>% zoo::as.yearmon()) %>% 
+  filter(Origin == "ORD") %>% 
+  group_by(date, route) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x = date, y = count)) +
+  geom_line() +
+  labs(title = "Number of Outbound Flights from ORD airport by Destination",
+       x = "Date",
+       y = "Number of Flights") +
+  theme_grey() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  facet_wrap(~route, ncol = 13)
+```
+
+The visualization illustrates the trend of outgoing flights from ORD (Chicago) over the years, from 1995 to 2000 (left to right). The majority of the routes showed consistent trends.
+
+Flights from Chicago to Minneapolis (ORD-MSP) have been consistently decreasing over the years, and flights from Chicago to Philadelphia (ORD-PHL) have been increasing. Meanwhile, flights to Seattle (ORD-SEA) are low at the beginning and end of each year and highest mid-year.
+
+This result is exclusively for flights outbound from ORD airport, which does not make a good representation of all the airports. However, the same analysis using different origin airports of interest can be re-performed to uncover the flight patterns for the airport.
+
+## **Can you detect cascading failures as delays in one airport create delays in others?**
+
+Analyze for cascading delays between the top 10 busiest airports in the USA in terms of flight frequency.
+
+Flight frequency for the top 10 busiest airports/ cities
+
+```{r}
+bz_airports <- dbGetQuery(conn, 
+                          "SELECT Origin AS iata, city as airport_city, COUNT(*) AS count
+                          FROM flight_data, airports
+                          WHERE airports.iata = flight_data.Origin
+                          GROUP BY iata, airport
+                          ORDER BY count DESC
+                          Limit 10")
+
+print(bz_airports)
+```
+
+`lagged_del`: lag 1-period departure delay time
+
+```{r}
+lagged_del <- dbGetQuery(conn, 
+                         "SELECT Origin, Dest, CRSDepTime, DepTime, DepDelay
+                         FROM flight_data
+                         WHERE CRSDepTime > 1900
+                         AND CRSDepTime <= 2200
+                         ORDER BY Origin, DepTime")
+
+lagged_del <- lagged_del %>% 
+  group_by(Origin) %>% 
+  mutate(depdelay_lag = lag(DepDelay)) %>%
+  filter(!is.na(depdelay_lag)) 
+
+print(lagged_del)
+```
+
+#### **Relationship between the average delay against time delayed for all the previous flight**
+
+```{r, fig.width = 10, fig.height = 5, dpi = 300}
+lagged_del %>%
+  filter(Origin == "ORD") %>% 
+  group_by(depdelay_lag) %>%
+  summarise(depdelay_mean = mean(DepDelay)) %>% 
+  ggplot(aes(y = depdelay_mean, x = depdelay_lag)) +
+  geom_point() +
+  labs(y = "Departure Delay (mins)", x = "Previous Departure Delay (mins)") +
+  scale_x_continuous(breaks = seq(0, 1500, by = 120))
+```
+
+The above scatter diagram illustrates the relationship (positive) between the previous delay and the subsequent flights' departure delay time (avg.) for flights outbound from Chicago O'Hare International airport between 19:00 -- 22:00 hours.
+
+Indicated by the increase in variability, the strength of the relationship cools off around the 480 (mins) mark. Suggesting that flights' ability to depart on time increases with the duration delayed for the previous flight since flights with longer delays can intersperse with flights leaving on time.
+
+#### **Cascading delays for top 10 busiest airports**
+
+```{r, fig.width = 10, fig.height = 5, dpi = 300}
+lagged_del %>%
+  filter(Origin %in% bz_airports$iata) %>% 
+  group_by(Origin, depdelay_lag) %>%
+  summarise(depdelay_mean = mean(DepDelay)) %>%
+  ggplot(aes(y = depdelay_mean, x = depdelay_lag)) +
+  geom_point() +
+  labs(y = "Departure Delay (mins)", x = "Previous Departure Delay (mins)") +
+  scale_x_continuous(breaks = seq(-750, 1500, by = 120)) +
+  facet_wrap(~ Origin, ncol=2)
+```
+
+Since flight schedules are aligned between the origin and destination of a flight, the impact of cascading delays in one airport on another airport can be interpreted implicitly through the relationship between previous delays and the subsequent flights' departure delay time.
+
+```{r}
+dbDisconnect(conn)
+```
